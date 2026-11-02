@@ -9,28 +9,44 @@ import {
   Tag,
   Sparkles,
   FileText,
+  MessageCircle,
 } from 'lucide-react';
+import { buildInvoiceMessage, openWhatsapp } from '@/domain/shared/utils/whatsapp';
 import { SalesInvoice } from '@/domain/sales/types';
 import { formatNIO } from '@/domain/shared/utils/currencyFormatter';
+import { dataStore } from '@/infrastructure/repositories/dataStore';
+import { invoiceHasIva } from '@/domain/sales/services/invoicingService';
 
 interface InvoicePdfViewProps {
   invoice: SalesInvoice;
   onClose?: () => void;
+  /** false cuando la pantalla que la muestra ya tiene sus propios botones (imprimir, WhatsApp) */
+  showToolbar?: boolean;
 }
 
-export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
-  // Desglose fiscal exacto (Precios sin IVA en items -> IVA 15% y Total con IVA al final)
-  const subtotalSinIva = invoice.subtotalSinIvaNio ?? (invoice.subtotalNio / 1.15);
-  const ivaTotal = invoice.ivaTotalNio ?? (subtotalSinIva * 0.15);
+export function InvoicePdfView({ invoice, onClose, showToolbar = true }: InvoicePdfViewProps) {
+  const storeSettings = dataStore.getStoreSettings();
+
+  // Régimen fiscal: el IVA solo se desglosa si la tienda está en régimen general
+  // y la factura se emitió con IVA. En cuota fija se muestran precios finales.
+  const showIva = dataStore.getIvaRate() > 0 && invoiceHasIva(invoice);
+  // Facturas antiguas emitidas con desglose de IVA guardan precios "sin IVA": al no desglosar,
+  // se convierten al precio final que pagó el cliente (precio sin IVA x (1 + tasa)).
+  const priceFactor = !showIva && invoiceHasIva(invoice) ? 1 + (invoice.ivaRate ?? 0) : 1;
+  const fx = (amount: number) => Number(((amount || 0) * priceFactor).toFixed(2));
+
+  // Desglose fiscal (solo aplica cuando showIva es verdadero)
+  const subtotalSinIva = invoice.subtotalSinIvaNio ?? invoice.subtotalNio;
+  const ivaTotal = invoice.ivaTotalNio ?? (subtotalSinIva * (invoice.ivaRate ?? 0));
   const totalConIva = invoice.totalConIvaNio ?? (invoice.totalNio || (subtotalSinIva + ivaTotal));
 
-  // Cálculo de total ahorrado por promociones en precios sin IVA
-  const totalSavedPromotion = (invoice.items || []).reduce((acc, item) => {
+  // Cálculo de total ahorrado por promociones
+  const totalSavedPromotion = fx((invoice.items || []).reduce((acc, item) => {
     const regularSinIva = item.regularPriceSinIvaNio ?? item.unitPriceSinIvaNio ?? item.unitPriceNio;
     const saleSinIva = item.unitPriceSinIvaNio ?? item.unitPriceNio;
     const diff = regularSinIva > saleSinIva ? (regularSinIva - saleSinIva) * item.quantity : 0;
     return acc + diff + (item.discountNio || 0);
-  }, 0) + (invoice.discountNio || 0);
+  }, 0) + (invoice.discountNio || 0));
 
   const handlePrint = () => {
     window.print();
@@ -39,7 +55,7 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
   return (
     <div className="flex flex-col max-h-[90vh]">
       {/* Barra de Acciones Superior (Oculta al imprimir) */}
-      <div className="flex items-center justify-between px-6 py-3 bg-surface-soft border-b border-blue-900/15 print:hidden">
+      <div className={`${showToolbar ? 'flex' : 'hidden'} items-center justify-between px-6 py-3 bg-surface-soft border-b border-blue-900/15 print:hidden`}>
         <div className="flex items-center gap-2">
           <FileText className="w-5 h-5 text-moss" />
           <span className="text-sm font-bold text-ink">Vista Previa de Factura Comercial (PDF)</span>
@@ -49,6 +65,15 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openWhatsapp(invoice.customerPhone, buildInvoiceMessage(invoice, storeSettings.storeName || 'Pajarita Store'))}
+            className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all shadow-md"
+            title={invoice.customerPhone ? `Enviar resumen a ${invoice.customerPhone}` : 'Enviar resumen por WhatsApp (elija el contacto)'}
+          >
+            <MessageCircle className="w-4 h-4" aria-hidden="true" />
+            <span>WhatsApp</span>
+          </button>
           <button
             onClick={handlePrint}
             className="flex items-center gap-1.5 bg-moss hover:bg-moss-700 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all shadow-md shadow-moss/20"
@@ -77,24 +102,27 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-6 pb-6 border-b-2 border-slate-900">
             {/* Datos de la Tienda */}
             <div className="flex items-start gap-4">
-              <div className="w-14 h-14 rounded-2xl bg-slate-900 text-sky-400 flex items-center justify-center font-extrabold text-2xl tracking-wider shadow-md shrink-0">
+              <div className="w-14 h-14 rounded-2xl bg-[#582452] text-[#EAA824] flex items-center justify-center font-black text-2xl tracking-wider shadow-md shrink-0">
                 PS
               </div>
               <div>
                 <h1 className="text-xl font-extrabold text-slate-900 tracking-tight leading-none uppercase">
-                  Pajarita Store
+                  {storeSettings.storeName || 'Pajarita Store'}
                 </h1>
-                <p className="text-xs font-semibold text-sky-700 mt-0.5">Moda, Prendas Importadas & Accesorios</p>
+                <p className="text-xs font-semibold text-amber-800 mt-0.5">Moda que vuela a ti • Prendas Importadas & Accesorios</p>
                 <div className="text-[11px] text-slate-600 space-y-0.5 mt-2">
-                  <p className="flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-slate-500" />
-                    <span>Altamira D’Este, De la Vicky 2c al lago, Managua, Nicaragua</span>
+                  <p className="flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span>{storeSettings.address || 'Bo. el Rodeo De la iglesia catolica 6 cuadras al lago'}</span>
                   </p>
-                  <p className="flex items-center gap-1">
-                    <Phone className="w-3 h-3 text-slate-500" />
-                    <span>WhatsApp: +505 8899-7766 &bull; RUC: J0310000294829</span>
+                  <p className="flex items-center gap-1.5">
+                    <Phone className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span>Celular / WhatsApp: {storeSettings.phoneWhatsapp || '+505 8658 1794'}{storeSettings.ruc ? ` • RUC: ${storeSettings.ruc}` : ''}</span>
                   </p>
-                  <p className="text-[10px] text-slate-500">contacto@pajaritastore.com &bull; www.pajaritastore.com</p>
+                  <p className="text-[10px] text-slate-500">
+                    {storeSettings.email}
+                    {storeSettings.website ? ` • ${storeSettings.website}` : ''}
+                  </p>
                 </div>
               </div>
             </div>
@@ -116,7 +144,7 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
                     <strong>Vencimiento:</strong> {invoice.dueDate}
                   </p>
                 )}
-                <div className="pt-1">
+                <div className="pt-1 flex flex-wrap gap-1.5 justify-start sm:justify-end">
                   <span
                     className={`inline-block px-2.5 py-0.5 rounded-md text-[11px] font-bold uppercase ${
                       invoice.status === 'pagada'
@@ -126,7 +154,27 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
                         : 'bg-amber-100 text-amber-800 border border-amber-300'
                     }`}
                   >
-                    {invoice.status === 'pagada' ? '✓ Pagada al 100%' : invoice.status === 'parcial' ? '• Abono Parcial' : '⏳ Pendiente'}
+                    {invoice.status === 'pagada' ? '✓ Pagada' : invoice.status === 'parcial' ? '• Abono Parcial' : '⏳ Cobro Pendiente'}
+                  </span>
+
+                  <span
+                    className={`inline-block px-2.5 py-0.5 rounded-md text-[11px] font-bold uppercase ${
+                      invoice.deliveryStatus === 'entregado'
+                        ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                        : invoice.deliveryStatus === 'listo_entrega'
+                        ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                        : invoice.deliveryStatus === 'en_transito'
+                        ? 'bg-sky-100 text-sky-900 border border-sky-300'
+                        : 'bg-slate-100 text-slate-800 border border-slate-300'
+                    }`}
+                  >
+                    {invoice.deliveryStatus === 'entregado'
+                      ? '✓ Entregado'
+                      : invoice.deliveryStatus === 'listo_entrega'
+                      ? '📦 Listo p/ Retiro'
+                      : invoice.deliveryStatus === 'en_transito'
+                      ? '✈️ En Tránsito'
+                      : '⏳ Pedido Pendiente'}
                   </span>
                 </div>
               </div>
@@ -163,14 +211,26 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
             <div className="bg-slate-50/80 p-4 rounded-xl border border-slate-200">
               <div className="flex items-center gap-1.5 pb-2 border-b border-slate-200 mb-2">
                 <span className="text-xs font-bold text-slate-900 uppercase tracking-wide">
-                  Términos Fiscales & Modalidad
+                  Términos Fiscales & Entrega
                 </span>
               </div>
               <div className="text-xs space-y-1 text-slate-700">
                 <p className="flex justify-between">
-                  <span className="text-slate-500">Tipo de Venta:</span>
+                  <span className="text-slate-500">Modalidad de Venta:</span>
                   <strong className="capitalize text-slate-900">
-                    {invoice.saleType === 'pedido' ? 'Bajo Pedido (Shein / Amazon)' : 'Venta de Tienda (Inmediata)'}
+                    {invoice.saleType === 'pedido' ? 'Bajo Pedido (Shein / Amazon)' : 'Venta Inmediata de Tienda'}
+                  </strong>
+                </p>
+                <p className="flex justify-between">
+                  <span className="text-slate-500">Estado de Entrega:</span>
+                  <strong className="text-slate-900 capitalize font-bold">
+                    {invoice.deliveryStatus === 'entregado'
+                      ? `Entregado (${invoice.deliveryDate || invoice.issueDate})`
+                      : invoice.deliveryStatus === 'listo_entrega'
+                      ? 'Listo para Entrega / Retiro'
+                      : invoice.deliveryStatus === 'en_transito'
+                      ? `En Tránsito ${invoice.trackingRef ? `(${invoice.trackingRef})` : ''}`
+                      : 'Pendiente de Importación'}
                   </strong>
                 </p>
                 <p className="flex justify-between">
@@ -204,10 +264,10 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
                 <tr>
                   <th className="p-3 w-14 text-center">Foto</th>
                   <th className="p-3">Descripción del SKU</th>
-                  <th className="p-3 text-right">P. Reg. (Sin IVA)</th>
-                  <th className="p-3 text-right">P. Venta (Sin IVA)</th>
+                  <th className="p-3 text-right">{showIva ? 'P. Reg. (Sin IVA)' : 'P. Regular'}</th>
+                  <th className="p-3 text-right">{showIva ? 'P. Venta (Sin IVA)' : 'P. Venta'}</th>
                   <th className="p-3 text-center">Cant.</th>
-                  <th className="p-3 text-right font-bold">Total Línea (Sin IVA)</th>
+                  <th className="p-3 text-right font-bold">{showIva ? 'Total Línea (Sin IVA)' : 'Total Línea'}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 text-slate-800">
@@ -247,13 +307,13 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
 
                       {/* Precio Regular Sin IVA */}
                       <td className="p-3 text-right font-mono text-slate-500">
-                        {formatNIO(regularPriceSinIva)}
+                        {formatNIO(fx(regularPriceSinIva))}
                       </td>
 
                       {/* Precio Venta Sin IVA */}
                       <td className="p-3 text-right">
                         <span className={`font-bold font-mono ${isPromo ? 'text-sky-700' : 'text-slate-900'}`}>
-                          {formatNIO(salePriceSinIva)}
+                          {formatNIO(fx(salePriceSinIva))}
                         </span>
                         {isPromo && (
                           <span className="block text-[9px] font-bold text-sky-600 uppercase">En Promo</span>
@@ -267,7 +327,7 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
 
                       {/* Total Línea Sin IVA */}
                       <td className="p-3 text-right font-bold font-mono text-slate-900">
-                        {formatNIO(lineTotalSinIva)}
+                        {formatNIO(fx(lineTotalSinIva))}
                       </td>
                     </tr>
                   );
@@ -290,7 +350,9 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
                       ¡Felicidades! Total Ahorrado por Promoción: {formatNIO(totalSavedPromotion)}
                     </span>
                     <p className="text-[11px] text-sky-700 mt-0.5">
-                      Esta factura refleja descuentos aplicados sobre los precios regulares de venta sin IVA.
+                      {showIva
+                        ? 'Esta factura refleja descuentos aplicados sobre los precios regulares de venta sin IVA.'
+                        : 'Esta factura refleja descuentos aplicados sobre los precios regulares de venta.'}
                     </p>
                   </div>
                 </div>
@@ -315,27 +377,49 @@ export function InvoicePdfView({ invoice, onClose }: InvoicePdfViewProps) {
 
             {/* Columna Derecha: Desglose Fiscal (Subtotal Sin IVA + IVA 15% = Total con IVA) */}
             <div className="sm:col-span-5 bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2 text-xs">
-              <div className="flex justify-between py-1 border-b border-slate-200 text-slate-600">
-                <span>Subtotal (Sin IVA):</span>
-                <span className="font-mono font-bold text-slate-800">{formatNIO(subtotalSinIva)}</span>
-              </div>
+              {showIva ? (
+                <>
+                  <div className="flex justify-between py-1 border-b border-slate-200 text-slate-600">
+                    <span>Subtotal (Sin IVA):</span>
+                    <span className="font-mono font-bold text-slate-800">{formatNIO(subtotalSinIva)}</span>
+                  </div>
 
-              {invoice.discountNio > 0 && (
-                <div className="flex justify-between py-1 border-b border-slate-200 text-emerald-700 font-medium">
-                  <span>Descuento Global (Sin IVA):</span>
-                  <span className="font-mono font-bold">-{formatNIO(invoice.discountNio)}</span>
-                </div>
+                  {invoice.discountNio > 0 && (
+                    <div className="flex justify-between py-1 border-b border-slate-200 text-emerald-700 font-medium">
+                      <span>Descuento Global (Sin IVA):</span>
+                      <span className="font-mono font-bold">-{formatNIO(invoice.discountNio)}</span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between py-1 border-b border-slate-200 text-slate-600">
+                    <span>IVA Fiscal (15%):</span>
+                    <span className="font-mono font-bold text-slate-800">+{formatNIO(ivaTotal)}</span>
+                  </div>
+
+                  <div className="flex justify-between py-2 border-t-2 border-slate-900 text-sm font-extrabold text-slate-900">
+                    <span>TOTAL CON IVA:</span>
+                    <span className="font-mono text-base text-slate-900">{formatNIO(totalConIva)}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {invoice.discountNio > 0 && (
+                    <div className="flex justify-between py-1 border-b border-slate-200 text-emerald-700 font-medium">
+                      <span>Descuentos aplicados:</span>
+                      <span className="font-mono font-bold">-{formatNIO(fx(invoice.discountNio))}</span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between py-2 border-t-2 border-slate-900 text-sm font-extrabold text-slate-900">
+                    <span>TOTAL A PAGAR:</span>
+                    <span className="font-mono text-base text-slate-900">{formatNIO(totalConIva)}</span>
+                  </div>
+
+                  <p className="text-[11px] text-slate-500 text-right">
+                    Contribuyente en Régimen de Cuota Fija
+                  </p>
+                </>
               )}
-
-              <div className="flex justify-between py-1 border-b border-slate-200 text-slate-600">
-                <span>IVA Fiscal (15%):</span>
-                <span className="font-mono font-bold text-slate-800">+{formatNIO(ivaTotal)}</span>
-              </div>
-
-              <div className="flex justify-between py-2 border-t-2 border-slate-900 text-sm font-extrabold text-slate-900">
-                <span>TOTAL CON IVA:</span>
-                <span className="font-mono text-base text-slate-900">{formatNIO(totalConIva)}</span>
-              </div>
 
               {/* Si es crédito, mostrar balance */}
               {invoice.paymentTerm === 'credito' && (

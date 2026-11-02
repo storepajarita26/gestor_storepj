@@ -47,7 +47,7 @@ export function DashboardView() {
     const invoices = dataStore.getInvoices();
     const rate = dataStore.getExchangeRate();
 
-    const calculated = calculateDashboardKpis(skus, stocks, orders, invoices, rate);
+    const calculated = calculateDashboardKpis(skus, stocks, orders, invoices, rate, undefined, dataStore.getTaxRegime());
     setKpis(calculated);
 
     const inTransit = orders.filter((o) =>
@@ -58,6 +58,17 @@ export function DashboardView() {
     const credits = invoices.filter((i) => i.balanceDueNio > 0 && i.status !== 'anulada');
     setPendingCredits(credits);
   };
+
+  // Saludo y fecha de este equipo (se calculan al montar para no diferir del servidor)
+  const [greeting, setGreeting] = useState({ title: '', date: '' });
+  useEffect(() => {
+    const now = new Date();
+    const h = now.getHours();
+    setGreeting({
+      title: h < 12 ? 'Buenos días' : h < 18 ? 'Buenas tardes' : 'Buenas noches',
+      date: now.toLocaleDateString('es-NI', { weekday: 'long', day: 'numeric', month: 'long' }),
+    });
+  }, []);
 
   useEffect(() => {
     refreshData();
@@ -71,32 +82,24 @@ export function DashboardView() {
       <div className="erp-card p-6 bg-gradient-to-r from-surface-soft via-white to-eggshell-100 border border-moss/15 shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 text-moss font-bold text-xs uppercase tracking-wider mb-1">
-              <Sparkles className="w-4 h-4 text-moss" />
-              <span>Panel de Control Operativo</span>
-            </div>
-            <h1 className="text-2xl font-extrabold text-ink tracking-tight">
-              Gestor de Operaciones Pajarita Store
-            </h1>
-            <p className="text-ink-muted text-xs mt-1">
-              Control en tiempo real de inventario, importaciones Shein/Amazon, prorrateo y créditos.
-            </p>
+            <h2 className="text-xl font-extrabold text-ink tracking-tight">{greeting.title || 'Hola'}</h2>
+            <p className="text-ink-muted text-sm mt-1 first-letter:uppercase">{greeting.date}&nbsp;</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
             <Link
-              href="/compras"
-              className="flex items-center gap-2 bg-moss hover:bg-moss-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-all shadow-md shadow-moss/20"
+              href="/vender"
+              className="flex items-center gap-2 bg-moss hover:bg-moss-700 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-all shadow-md shadow-moss/20"
             >
-              <PlusCircle className="w-4 h-4 text-mustard" />
-              <span>Nueva Compra</span>
+              <Receipt className="w-4 h-4 text-mustard" />
+              <span>Vender</span>
             </Link>
             <Link
-              href="/ventas"
-              className="flex items-center gap-2 bg-surface hover:bg-eggshell-100 text-ink border border-moss/20 text-xs font-bold px-4 py-2.5 rounded-xl transition-all shadow-sm"
+              href="/compras"
+              className="flex items-center gap-2 bg-surface hover:bg-eggshell-100 text-ink border border-moss/20 text-sm font-bold px-4 py-2.5 rounded-xl transition-all shadow-sm"
             >
-              <Receipt className="w-4 h-4 text-moss" />
-              <span>Nueva Venta</span>
+              <PlusCircle className="w-4 h-4 text-moss" />
+              <span>Nueva compra</span>
             </Link>
           </div>
         </div>

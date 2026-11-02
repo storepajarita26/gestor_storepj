@@ -41,6 +41,11 @@ const BADGE_CONFIG: Record<string, { label: string; style: string }> = {
   borrador: { label: 'Borrador', style: 'bg-eggshell text-ink-muted border-moss/15' },
   anulada: { label: 'Anulada', style: 'bg-slate-200 text-slate-600 border-slate-300' },
 
+  // Estados de Entrega / Cumplimiento de Ventas
+  en_transito: { label: '✈️ En Tránsito', style: 'bg-sky-500/10 text-sky-800 border-sky-500/25 font-semibold' },
+  listo_entrega: { label: '📦 Listo p/ Entrega', style: 'bg-amber-500/10 text-amber-900 border-amber-500/30 font-semibold' },
+  entregado: { label: '✓ Entregado', style: 'bg-emerald-600/10 text-emerald-800 border-emerald-600/25 font-semibold' },
+
   // Modalidades y Tipos
   simple: { label: 'Stock Tienda', style: 'bg-moss/10 text-moss-800 border-moss/20' },
   especial: { label: 'Bajo Pedido (25%)', style: 'bg-purple-500/10 text-purple-800 border-purple-500/20' },

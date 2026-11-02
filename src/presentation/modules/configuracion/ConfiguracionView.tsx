@@ -16,17 +16,32 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { Modal } from '@/presentation/components/ui/Modal';
+import { ConfirmDialog } from '@/presentation/components/ui/ConfirmDialog';
+import { useToast } from '@/presentation/components/ui/Toast';
 import { dataStore } from '@/infrastructure/repositories/dataStore';
 import { Category } from '@/domain/catalog/types';
+import { StoreSettings, TaxRegime } from '@/domain/shared/types';
 import { formatNIO } from '@/domain/shared/utils/currencyFormatter';
 
 export function ConfiguracionView() {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<'tasa' | 'categorias' | 'pricing' | 'tienda'>('tasa');
   
   // Currency Rate State
   const [exchangeRate, setExchangeRate] = useState<number>(36.80);
   const [rateInput, setRateInput] = useState<string>('36.80');
   const [rateSavedMessage, setRateSavedMessage] = useState(false);
+
+  // Store Settings State
+  const [storeSettings, setStoreSettings] = useState<StoreSettings>({
+    storeName: 'Pajarita Store',
+    phoneWhatsapp: '+505 8658 1794',
+    address: 'Bo. el Rodeo De la iglesia catolica 6 cuadras al lago',
+    email: 'contacto@pajaritastore.com',
+    website: 'www.pajaritastore.com',
+    ruc: '',
+    taxRegime: 'cuota_fija',
+  });
 
   // Categories State
   const [categories, setCategories] = useState<Category[]>([]);
@@ -36,11 +51,37 @@ export function ConfiguracionView() {
   const [categoryName, setCategoryName] = useState('');
   const [categoryDescription, setCategoryDescription] = useState('');
 
+  // Borrado de categorías: confirmación con lo que afecta y "Deshacer"
+  const [categoryToDelete, setCategoryToDelete] = useState<Category | null>(null);
+  const categoryImpact = categoryToDelete ? dataStore.getCategoryDeleteImpact(categoryToDelete.id) : null;
+
+  const confirmDeleteCategory = () => {
+    const cat = categoryToDelete;
+    setCategoryToDelete(null);
+    if (!cat) return;
+    const handle = dataStore.deleteCategory(cat.id);
+    if (!handle) return;
+    toast.show({
+      type: 'info',
+      title: cat.parentId ? 'Subcategoría eliminada' : 'Categoría eliminada',
+      message: `"${cat.name}" se eliminó.`,
+      duration: dataStore.getUndoWindowMs(),
+      action: {
+        label: 'Deshacer',
+        onClick: () => {
+          if (dataStore.undoDelete(handle.token)) toast.success(`"${cat.name}" se restauró.`);
+          else toast.warning('Ya no se puede deshacer: el borrado se envió a la nube.');
+        },
+      },
+    });
+  };
+
   const refreshData = () => {
     const rate = dataStore.getExchangeRate();
     setExchangeRate(rate);
     setRateInput(rate.toString());
     setCategories(dataStore.getCategories());
+    setStoreSettings(dataStore.getStoreSettings());
   };
 
   useEffect(() => {
@@ -88,15 +129,6 @@ export function ConfiguracionView() {
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-bold text-ink tracking-tight flex items-center gap-2">
-          <Settings className="w-5 h-5 text-moss" />
-          Configuración Global del Sistema ERP
-        </h1>
-        <p className="text-xs text-ink-muted">
-          Ajuste centralizado de tasa de cambio USD/NIO, jerarquía de 2 niveles de categorías, reglas de pricing y parámetros de la tienda.
-        </p>
-      </div>
 
       {/* Tabs Menu */}
       <div className="erp-card p-2 rounded-2xl flex flex-wrap items-center gap-2">
@@ -286,7 +318,8 @@ export function ConfiguracionView() {
                     </div>
 
                     <button
-                      onClick={() => dataStore.deleteCategory(mainCat.id)}
+                      onClick={() => setCategoryToDelete(mainCat)}
+                      aria-label={`Eliminar categoría ${mainCat.name}`}
                       className="text-ink-muted hover:text-rose-600 p-1 transition-colors"
                       title="Eliminar categoría y subcategorías"
                     >
@@ -317,7 +350,8 @@ export function ConfiguracionView() {
                           >
                             <span className="font-bold text-ink">{sub.name}</span>
                             <button
-                              onClick={() => dataStore.deleteCategory(sub.id)}
+                              onClick={() => setCategoryToDelete(sub)}
+                              aria-label={`Eliminar subcategoría ${sub.name}`}
                               className="text-ink-muted hover:text-rose-600 ml-1"
                               title="Eliminar subcategoría"
                             >
@@ -373,35 +407,133 @@ export function ConfiguracionView() {
 
       {/* TAB 4: DATOS TIENDA */}
       {activeTab === 'tienda' && (
-        <div className="erp-card p-6 space-y-4 max-w-2xl">
-          <h3 className="font-bold text-sm text-ink pb-2 border-b border-moss/10">Información del Negocio</h3>
-          <div className="space-y-3 text-xs">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            dataStore.saveStoreSettings(storeSettings);
+            toast.success('Información del negocio guardada con éxito.', 'Configuración Actualizada');
+          }}
+          className="erp-card p-6 space-y-4 max-w-2xl"
+        >
+          <div className="flex items-center justify-between pb-2 border-b border-moss/10">
             <div>
-              <label className="font-bold text-ink-muted block mb-1">Nombre Comercial de la Tienda</label>
-              <input
-                type="text"
-                defaultValue="Pajarita Store"
-                className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink font-bold"
-              />
-            </div>
-            <div>
-              <label className="font-bold text-ink-muted block mb-1">WhatsApp de Atención & Pedidos</label>
-              <input
-                type="text"
-                defaultValue="+505 8899-7766"
-                className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink font-bold"
-              />
-            </div>
-            <div>
-              <label className="font-bold text-ink-muted block mb-1">Ubicación / Ciudad Central</label>
-              <input
-                type="text"
-                defaultValue="Managua, Nicaragua"
-                className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink"
-              />
+              <h3 className="font-bold text-sm text-ink">Información Comercial del Negocio</h3>
+              <p className="text-xs text-ink-muted">Datos que alimentan las facturas comerciales en PDF y contacto de clientes.</p>
             </div>
           </div>
-        </div>
+
+          <div className="space-y-3 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="font-bold text-ink-muted block mb-1">Nombre Comercial de la Tienda *</label>
+                <input
+                  type="text"
+                  required
+                  value={storeSettings.storeName}
+                  onChange={(e) => setStoreSettings({ ...storeSettings, storeName: e.target.value })}
+                  className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink font-bold focus:outline-none focus:border-moss"
+                />
+              </div>
+              <div>
+                <label className="font-bold text-ink-muted block mb-1">WhatsApp de Atención & Pedidos *</label>
+                <input
+                  type="text"
+                  required
+                  value={storeSettings.phoneWhatsapp}
+                  onChange={(e) => setStoreSettings({ ...storeSettings, phoneWhatsapp: e.target.value })}
+                  className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink font-bold focus:outline-none focus:border-moss"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="font-bold text-ink-muted block mb-1">Dirección Física / Ubicación *</label>
+              <input
+                type="text"
+                required
+                value={storeSettings.address}
+                onChange={(e) => setStoreSettings({ ...storeSettings, address: e.target.value })}
+                className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink focus:outline-none focus:border-moss"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="credit-days" className="font-bold text-ink-muted block mb-1">Plazo de crédito por defecto (días)</label>
+              <input
+                id="credit-days"
+                type="number"
+                min={1}
+                max={365}
+                value={storeSettings.defaultCreditDays ?? 30}
+                onChange={(e) => setStoreSettings({ ...storeSettings, defaultCreditDays: Math.max(1, parseInt(e.target.value, 10) || 30) })}
+                className="w-32 bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink focus:outline-none focus:border-moss"
+              />
+              <p className="text-ink-muted mt-1">Vencimiento sugerido al vender a crédito. Las facturas a crédito sin fecha usan este plazo desde su emisión.</p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="font-bold text-ink-muted block mb-1">RUC Fiscal</label>
+                <input
+                  type="text"
+                  value={storeSettings.ruc || ''}
+                  onChange={(e) => setStoreSettings({ ...storeSettings, ruc: e.target.value })}
+                  className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink font-mono focus:outline-none focus:border-moss"
+                  placeholder="J0310000294829"
+                />
+              </div>
+              <div>
+                <label className="font-bold text-ink-muted block mb-1">Correo Electrónico</label>
+                <input
+                  type="email"
+                  value={storeSettings.email || ''}
+                  onChange={(e) => setStoreSettings({ ...storeSettings, email: e.target.value })}
+                  className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink focus:outline-none focus:border-moss"
+                  placeholder="contacto@pajaritastore.com"
+                />
+              </div>
+              <div>
+                <label className="font-bold text-ink-muted block mb-1">Sitio Web Oficial</label>
+                <input
+                  type="text"
+                  value={storeSettings.website || ''}
+                  onChange={(e) => setStoreSettings({ ...storeSettings, website: e.target.value })}
+                  className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink focus:outline-none focus:border-moss"
+                  placeholder="www.pajaritastore.com"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="taxRegime" className="font-bold text-ink-muted block mb-1">
+                Régimen Fiscal (DGI)
+              </label>
+              <select
+                id="taxRegime"
+                value={storeSettings.taxRegime ?? 'cuota_fija'}
+                onChange={(e) =>
+                  setStoreSettings({ ...storeSettings, taxRegime: e.target.value as TaxRegime })
+                }
+                className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-ink font-bold focus:outline-none focus:border-moss"
+              >
+                <option value="cuota_fija">Cuota fija (sin desglose de IVA en facturas)</option>
+                <option value="general">Régimen general (desglose de IVA 15%)</option>
+              </select>
+              <p className="text-ink-muted mt-1">
+                Define si las nuevas facturas desglosan IVA. Las facturas ya emitidas conservan sus montos.
+              </p>
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-moss/10 flex justify-end">
+            <button
+              type="submit"
+              className="bg-moss hover:bg-moss-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all shadow-md shadow-moss/20"
+            >
+              Guardar Datos de la Tienda
+            </button>
+          </div>
+        </form>
       )}
 
       {/* Modal Crear / Editar Categoría */}
@@ -470,6 +602,24 @@ export function ConfiguracionView() {
           </div>
         </form>
       </Modal>
+      <ConfirmDialog
+        isOpen={Boolean(categoryToDelete)}
+        title={categoryToDelete?.parentId ? '¿Eliminar la subcategoría?' : '¿Eliminar la categoría?'}
+        confirmLabel="Eliminar"
+        onCancel={() => setCategoryToDelete(null)}
+        onConfirm={confirmDeleteCategory}
+      >
+        <p>
+          <strong>{categoryToDelete?.name}</strong>
+        </p>
+        {categoryImpact && (
+          <ul className="list-disc pl-5 text-ink-muted">
+            {!categoryToDelete?.parentId && <li>{categoryImpact.subcategories} subcategoría(s) también se eliminarán</li>}
+            <li>{categoryImpact.products} producto(s) quedarán sin esta categoría (no se borran)</li>
+          </ul>
+        )}
+        <p>Tendrá unos segundos para deshacerlo.</p>
+      </ConfirmDialog>
     </div>
   );
 }

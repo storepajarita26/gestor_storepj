@@ -1,60 +1,69 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import Link from 'next/link';
-import {
-  Boxes,
-  Plus,
-  Search,
-  Tag,
-  Palette,
-  Trash2,
-  Image as ImageIcon,
-  Settings,
-  FolderTree,
-} from 'lucide-react';
-import { StatusBadge } from '@/presentation/components/ui/StatusBadge';
-import { Modal } from '@/presentation/components/ui/Modal';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useDeepLink } from '@/presentation/hooks/useDeepLink';
 import { dataStore } from '@/infrastructure/repositories/dataStore';
-import { formatNIO } from '@/domain/shared/utils/currencyFormatter';
-import { Product, ProductSku, ProductType, Category } from '@/domain/catalog/types';
-import { generateSkuCode } from '@/domain/catalog/services/catalogService';
+import { Product, ProductSku, Category, ProductType } from '@/domain/catalog/types';
+import { StockLevel } from '@/domain/inventory/types';
+import { ConfirmDialog } from '@/presentation/components/ui/ConfirmDialog';
+import { useToast } from '@/presentation/components/ui/Toast';
+import { Pagination } from '@/presentation/components/ui/Pagination';
+import { exportCatalogToCsv } from '@/domain/shared/utils/exportUtils';
+import { ProductFiltersBar, CatalogSortOption } from './components/ProductFiltersBar';
+import { ProductCard } from './components/ProductCard';
+import { SkuCard } from './components/SkuCard';
+import { CreateProductModal } from './components/CreateProductModal';
+import { CreateSkuModal } from './components/CreateSkuModal';
+import { EditSkuModal } from './components/EditSkuModal';
+import { EditProductModal } from './components/EditProductModal';
+import { LabelsModal } from './components/LabelsModal';
+import { useAuth } from '@/presentation/context/AuthContext';
 
 export function CatalogoView() {
+  const toast = useToast();
+  // Sin sesión el catálogo es de solo lectura: sin costos, sin edición y solo artículos activos
+  const { canManage } = useAuth();
+
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [stockList, setStockList] = useState<StockLevel[]>([]);
+  const [exchangeRate, setExchangeRate] = useState<number>(36.80);
+
+  // View Mode: Por Producto o Por SKU
+  const [viewMode, setViewMode] = useState<'producto' | 'sku'>('producto');
+
+  // Ordenamiento (por defecto fecha de creación más reciente)
+  const [sortBy, setSortBy] = useState<CatalogSortOption>('created_desc');
+
+  // Filters
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('all');
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  // Búsqueda global: ?q=<texto> llega ya filtrado
+  useDeepLink('q', (q) => setSearchTerm(q));
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string>('all');
 
-  // Selected variant map per product card: { [productId]: selectedSkuId }
-  const [selectedSkuByProduct, setSelectedSkuByProduct] = useState<Record<string, string>>({});
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(12);
 
-  // Form State for new Product + SKUs (with 2-level categories)
-  const [name, setName] = useState('');
-  const [categoryId, setCategoryId] = useState('');
-  const [subcategoryId, setSubcategoryId] = useState('');
-  const [description, setDescription] = useState('');
-  const [seoDescription, setSeoDescription] = useState('');
-  const [productType, setProductType] = useState<ProductType>('simple');
-  const [skus, setSkus] = useState<Omit<ProductSku, 'id' | 'productId'>[]>([
-    {
-      skuCode: 'PS-VEST-M-ROS-001',
-      skuDescription: 'Vestido Floral - Talla M Rosa',
-      size: 'M',
-      colorName: 'Rosa Pastel',
-      colorHex: '#F472B6',
-      costPriceUsd: 6.5,
-      costPriceNio: 239.2,
-      salePriceNio: 450.0,
-      mainImageUrl: 'https://images.unsplash.com/photo-1572804013309-59a88b7e92f1?auto=format&fit=crop&w=600&q=80',
-      isActive: true,
-    },
-  ]);
+  // Modals State
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isCreateSkuModalOpen, setIsCreateSkuModalOpen] = useState(false);
+  const [selectedProductForNewSku, setSelectedProductForNewSku] = useState<Product | null>(null);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editingSkuState, setEditingSkuState] = useState<{
+    sku: ProductSku | null;
+    product: Product | null;
+  }>({
+    sku: null,
+    product: null,
+  });
 
   const refreshData = () => {
     setProducts(dataStore.getProducts());
     setCategories(dataStore.getCategories());
+    setStockList(dataStore.getStock());
+    setExchangeRate(dataStore.getExchangeRate());
   };
 
   useEffect(() => {
@@ -63,505 +72,435 @@ export function CatalogoView() {
     return unsub;
   }, []);
 
-  const mainCategories = categories.filter((c) => !c.parentId);
-  const availableSubcategories = categories.filter((c) => c.parentId === categoryId);
+  // Map stock by SKU ID for fast O(1) lookup
+  const stockMap = useMemo(() => {
+    const map: Record<string, StockLevel> = {};
+    stockList.forEach((s) => {
+      map[s.skuId] = s;
+    });
+    return map;
+  }, [stockList]);
 
-  const handleOpenCreateModal = () => {
-    const defaultCat = mainCategories[0]?.id || '';
-    setCategoryId(defaultCat);
-    const subcats = categories.filter((c) => c.parentId === defaultCat);
-    setSubcategoryId(subcats[0]?.id || '');
-    setIsModalOpen(true);
-  };
+  // Productos visibles: el público solo ve productos y variantes activos
+  const visibleProducts = useMemo(() => {
+    if (canManage) return products;
+    return products
+      .filter((p) => p.isActive)
+      .map((p) => ({ ...p, skus: (p.skus || []).filter((s) => s.isActive) }))
+      .filter((p) => p.skus.length > 0);
+  }, [products, canManage]);
 
-  const handleCategoryChange = (newCatId: string) => {
-    setCategoryId(newCatId);
-    const subcats = categories.filter((c) => c.parentId === newCatId);
-    setSubcategoryId(subcats[0]?.id || '');
-  };
+  // Filtered Products
+  const filteredProducts = useMemo(() => {
+    return visibleProducts.filter((p) => {
+      // Category filter
+      if (selectedCategory !== 'all' && p.categoryId !== selectedCategory) {
+        return false;
+      }
+      // Subcategory filter
+      if (selectedSubcategory !== 'all' && p.subcategoryId !== selectedSubcategory) {
+        return false;
+      }
+      // Search filter
+      if (searchTerm.trim()) {
+        const query = searchTerm.toLowerCase();
+        const matchesName = p.name.toLowerCase().includes(query);
+        const matchesCode = (p.productCode || '').toLowerCase().includes(query);
+        const matchesDesc = (p.description || '').toLowerCase().includes(query);
+        const matchesSku = (p.skus || []).some(
+          (s) =>
+            s.skuCode.toLowerCase().includes(query) ||
+            (s.colorName || '').toLowerCase().includes(query) ||
+            (s.size || '').toLowerCase().includes(query)
+        );
+        return matchesName || matchesCode || matchesDesc || matchesSku;
+      }
 
-  const handleAddSkuRow = () => {
-    const code = generateSkuCode(name || 'ITEM', 'L', 'Negro');
-    setSkus([
-      ...skus,
-      {
-        skuCode: code,
-        skuDescription: `${name || 'Producto'} - Variante L`,
-        size: 'L',
-        colorName: 'Negro',
-        colorHex: '#30342B',
-        costPriceUsd: 5.0,
-        costPriceNio: 184.0,
-        salePriceNio: 350.0,
-        mainImageUrl: '',
-        isActive: true,
-      },
-    ]);
-  };
+      return true;
+    });
+  }, [visibleProducts, selectedCategory, selectedSubcategory, searchTerm]);
 
-  const handleCreateProduct = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name || skus.length === 0) return;
+  // Flattened all SKUs with their parent product
+  const allProductSkus = useMemo(() => {
+    return visibleProducts.flatMap((p) => (p.skus || []).map((s) => ({ sku: s, product: p })));
+  }, [visibleProducts]);
 
-    const cat = categories.find((c) => c.id === categoryId);
-    const subcat = categories.find((c) => c.id === subcategoryId);
+  // Filtered SKUs
+  const filteredSkus = useMemo(() => {
+    return allProductSkus.filter(({ sku, product }) => {
+      if (selectedCategory !== 'all' && product.categoryId !== selectedCategory) return false;
+      if (selectedSubcategory !== 'all' && product.subcategoryId !== selectedSubcategory) return false;
+      if (searchTerm.trim()) {
+        const query = searchTerm.toLowerCase();
+        const matchesName = product.name.toLowerCase().includes(query);
+        const matchesProductCode = (product.productCode || '').toLowerCase().includes(query);
+        const matchesSkuCode = sku.skuCode.toLowerCase().includes(query);
+        const matchesSkuDesc = (sku.skuDescription || '').toLowerCase().includes(query);
+        const matchesColor = (sku.colorName || '').toLowerCase().includes(query);
+        const matchesSize = (sku.size || '').toLowerCase().includes(query);
+        return matchesName || matchesProductCode || matchesSkuCode || matchesSkuDesc || matchesColor || matchesSize;
+      }
+      return true;
+    });
+  }, [allProductSkus, selectedCategory, selectedSubcategory, searchTerm]);
 
-    dataStore.addProduct({
-      name,
-      slug: name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-      categoryId: categoryId || mainCategories[0]?.id,
+  // Sorted Products based on selected sort option (default: creation date descending)
+  const sortedProducts = useMemo(() => {
+    return [...filteredProducts].sort((a, b) => {
+      if (sortBy === 'created_desc') {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (timeB !== timeA) return timeB - timeA;
+        return (b.productCode || b.id || '').localeCompare(a.productCode || a.id || '');
+      }
+      if (sortBy === 'created_asc') {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (timeA !== timeB) return timeA - timeB;
+        return (a.productCode || a.id || '').localeCompare(b.productCode || b.id || '');
+      }
+      if (sortBy === 'name_asc') {
+        return a.name.localeCompare(b.name);
+      }
+      if (sortBy === 'name_desc') {
+        return b.name.localeCompare(a.name);
+      }
+      if (sortBy === 'code_asc') {
+        return (a.productCode || '').localeCompare(b.productCode || '', undefined, { numeric: true });
+      }
+      return 0;
+    });
+  }, [filteredProducts, sortBy]);
+
+  // Sorted SKUs based on selected sort option (default: creation date descending)
+  const sortedSkus = useMemo(() => {
+    return [...filteredSkus].sort((a, b) => {
+      if (sortBy === 'created_desc') {
+        const timeA = a.sku.createdAt
+          ? new Date(a.sku.createdAt).getTime()
+          : (a.product.createdAt ? new Date(a.product.createdAt).getTime() : 0);
+        const timeB = b.sku.createdAt
+          ? new Date(b.sku.createdAt).getTime()
+          : (b.product.createdAt ? new Date(b.product.createdAt).getTime() : 0);
+        if (timeB !== timeA) return timeB - timeA;
+        return (b.sku.skuCode || '').localeCompare(a.sku.skuCode || '', undefined, { numeric: true });
+      }
+      if (sortBy === 'created_asc') {
+        const timeA = a.sku.createdAt
+          ? new Date(a.sku.createdAt).getTime()
+          : (a.product.createdAt ? new Date(a.product.createdAt).getTime() : 0);
+        const timeB = b.sku.createdAt
+          ? new Date(b.sku.createdAt).getTime()
+          : (b.product.createdAt ? new Date(b.product.createdAt).getTime() : 0);
+        if (timeA !== timeB) return timeA - timeB;
+        return (a.sku.skuCode || '').localeCompare(b.sku.skuCode || '', undefined, { numeric: true });
+      }
+      if (sortBy === 'name_asc') {
+        const cmp = a.product.name.localeCompare(b.product.name);
+        return cmp !== 0 ? cmp : (a.sku.skuCode || '').localeCompare(b.sku.skuCode || '', undefined, { numeric: true });
+      }
+      if (sortBy === 'name_desc') {
+        const cmp = b.product.name.localeCompare(a.product.name);
+        return cmp !== 0 ? cmp : (b.sku.skuCode || '').localeCompare(a.sku.skuCode || '', undefined, { numeric: true });
+      }
+      if (sortBy === 'code_asc') {
+        return (a.sku.skuCode || '').localeCompare(b.sku.skuCode || '', undefined, { numeric: true });
+      }
+      return 0;
+    });
+  }, [filteredSkus, sortBy]);
+
+  // Paginated calculations based on active view mode
+  const totalItems = viewMode === 'producto' ? sortedProducts.length : sortedSkus.length;
+  const totalPages = Math.ceil(totalItems / itemsPerPage) || 1;
+
+  const paginatedProducts = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return sortedProducts.slice(start, start + itemsPerPage);
+  }, [sortedProducts, currentPage, itemsPerPage]);
+
+  const paginatedSkus = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return sortedSkus.slice(start, start + itemsPerPage);
+  }, [sortedSkus, currentPage, itemsPerPage]);
+
+  const handleCreateProduct = (data: {
+    name: string;
+    productCode?: string;
+    categoryId?: string;
+    subcategoryId?: string;
+    description?: string;
+    seoDescription?: string;
+    descriptionHtml?: string;
+    productType: ProductType;
+    skus: Omit<ProductSku, 'id' | 'productId'>[];
+  }) => {
+    const cat = categories.find((c) => c.id === data.categoryId);
+    const subcat = categories.find((c) => c.id === data.subcategoryId);
+
+    const created = dataStore.addProduct({
+      name: data.name,
+      productCode: data.productCode,
+      slug: data.name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+      categoryId: data.categoryId,
       categoryName: cat?.name || 'General',
-      subcategoryId: subcategoryId || undefined,
-      subcategoryName: subcat?.name || undefined,
-      description,
-      seoDescription,
-      productType,
+      subcategoryId: data.subcategoryId,
+      subcategoryName: subcat?.name,
+      description: data.description,
+      seoDescription: data.seoDescription,
+      descriptionHtml: data.descriptionHtml || undefined,
+      productType: data.productType,
       isFeatured: false,
       isActive: true,
-      skus: skus as any,
+      skus: data.skus as any,
     });
 
-    setIsModalOpen(false);
-    setName('');
-    setDescription('');
-    setSeoDescription('');
+    toast.success(`Producto "${created.name}" (${created.productCode}) creado con éxito.`, 'Catálogo Actualizado');
   };
 
-  const filteredProducts = products.filter((p) => {
-    const matchesSearch =
-      p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.skus.some((s) => s.skuCode.toLowerCase().includes(searchTerm.toLowerCase()) || (s.colorName || '').toLowerCase().includes(searchTerm.toLowerCase()));
-    
-    const matchesCat =
-      selectedCategoryFilter === 'all' ||
-      p.categoryId === selectedCategoryFilter ||
-      p.subcategoryId === selectedCategoryFilter;
+  const handleSaveProduct = async (updated: Product) => {
+    const res = await dataStore.updateProduct(updated);
+    if (res.success) {
+      toast.success(res.message || `Producto "${updated.name}" actualizado.`, 'Producto Actualizado');
+    } else {
+      toast.warning(res.message || 'Actualizado localmente', 'Aviso');
+    }
+    setEditingProduct(null);
+  };
 
-    return matchesSearch && matchesCat;
-  });
+  // Borrado con confirmación (muestra lo que se pierde) y "Deshacer" durante unos segundos
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const deleteImpact = productToDelete ? dataStore.getProductDeleteImpact(productToDelete.id) : null;
+  const hasSales = Boolean(deleteImpact && deleteImpact.salesLines > 0);
+
+  const handleDeleteProduct = (productId: string) => {
+    setProductToDelete(products.find((p) => p.id === productId) || null);
+  };
+
+  const confirmDeleteProduct = async () => {
+    const product = productToDelete;
+    setProductToDelete(null);
+    if (!product) return;
+    if (hasSales) {
+      // Con ventas registradas no se borra: se desactiva (deja de mostrarse y venderse)
+      const res = await dataStore.updateProduct({ ...product, isActive: false });
+      if (res.success) toast.success(`"${product.name}" quedó inactivo: ya no aparece para vender.`, 'Producto desactivado');
+      else toast.warning(res.message || 'Se guardó en este equipo.', 'Producto desactivado en este equipo');
+      return;
+    }
+    const handle = dataStore.deleteProduct(product.id);
+    if (!handle) return;
+    toast.show({
+      type: 'info',
+      title: 'Producto eliminado',
+      message: `"${product.name}" y sus variantes se eliminaron.`,
+      duration: dataStore.getUndoWindowMs(),
+      action: {
+        label: 'Deshacer',
+        onClick: () => {
+          if (dataStore.undoDelete(handle.token)) toast.success(`"${product.name}" se restauró.`);
+          else toast.warning('Ya no se puede deshacer: el borrado se envió a la nube.');
+        },
+      },
+    });
+  };
+
+  const handleExportCatalog = () => {
+    exportCatalogToCsv(products);
+    toast.info('Archivo Excel del catálogo descargado correctamente.');
+  };
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-ink tracking-tight flex items-center gap-2">
-            <Boxes className="w-5 h-5 text-moss" />
-            Administración del Catálogo & Variantes por SKU
-          </h1>
-          <p className="text-xs text-ink-muted">
-            Jerarquía en 2 niveles (Categorías & Subcategorías), imágenes por variante y códigos de color HEX.
-          </p>
-        </div>
+      {/* Filters & Actions Bar */}
+      <ProductFiltersBar
+        searchTerm={searchTerm}
+        onSearchChange={(term) => {
+          setSearchTerm(term);
+          setCurrentPage(1);
+        }}
+        categories={categories}
+        selectedCategory={selectedCategory}
+        onCategoryChange={(catId) => {
+          setSelectedCategory(catId);
+          setCurrentPage(1);
+        }}
+        selectedSubcategory={selectedSubcategory}
+        onSubcategoryChange={(subcatId) => {
+          setSelectedSubcategory(subcatId);
+          setCurrentPage(1);
+        }}
+        viewMode={viewMode}
+        onViewModeChange={(mode) => {
+          setViewMode(mode);
+          setCurrentPage(1);
+        }}
+        sortBy={sortBy}
+        onSortChange={(sort) => {
+          setSortBy(sort);
+          setCurrentPage(1);
+        }}
+        productsCount={filteredProducts.length}
+        skusCount={filteredSkus.length}
+        onOpenCreateModal={() => setIsCreateModalOpen(true)}
+        onOpenCreateSkuModal={() => {
+          setSelectedProductForNewSku(null);
+          setIsCreateSkuModalOpen(true);
+        }}
+        onExportCatalog={handleExportCatalog}
+        onPrintLabels={canManage ? () => setLabelsOpen(true) : undefined}
+        canManage={canManage}
+      />
 
-        <div className="flex items-center gap-2">
-          <Link
-            href="/configuracion"
-            className="flex items-center gap-1.5 bg-surface hover:bg-surface-soft border border-moss/20 text-ink text-xs font-bold px-3.5 py-2.5 rounded-xl transition-all shadow-xs"
-            title="Configurar Categorías y Subcategorías"
-          >
-            <FolderTree className="w-4 h-4 text-moss" />
-            <span>Gestionar Categorías</span>
-          </Link>
-
-          <button
-            onClick={handleOpenCreateModal}
-            className="flex items-center gap-2 bg-moss hover:bg-moss-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-all shadow-md shadow-moss/20"
-          >
-            <Plus className="w-4 h-4 text-mustard" />
-            <span>Crear Nuevo Producto</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Filter Bar */}
-      <div className="erp-card p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 bg-surface border border-moss/15 rounded-xl px-3 py-2 w-full sm:w-72 shadow-xs">
-          <Search className="w-4 h-4 text-ink-muted" />
-          <input
-            type="text"
-            placeholder="Buscar por producto, SKU, color..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="bg-transparent text-xs text-ink placeholder-ink-muted focus:outline-none w-full"
-          />
-        </div>
-
-        <div className="flex items-center gap-2 text-xs">
-          <Tag className="w-3.5 h-3.5 text-ink-muted" />
-          <span className="text-ink-muted font-medium">Filtrar por Categoría:</span>
-          <select
-            value={selectedCategoryFilter}
-            onChange={(e) => setSelectedCategoryFilter(e.target.value)}
-            className="bg-surface border border-moss/15 text-ink rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-moss"
-          >
-            <option value="all">Todas las categorías y subcategorías</option>
-            {mainCategories.map((mainCat) => {
-              const subcats = categories.filter((c) => c.parentId === mainCat.id);
-              return (
-                <optgroup key={mainCat.id} label={`📁 ${mainCat.name}`}>
-                  <option value={mainCat.id}>{mainCat.name} (Todo)</option>
-                  {subcats.map((sub) => (
-                    <option key={sub.id} value={sub.id}>
-                      &nbsp;&nbsp;↳ {sub.name}
-                    </option>
-                  ))}
-                </optgroup>
-              );
-            })}
-          </select>
-        </div>
-      </div>
-
-      {/* Products Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredProducts.map((prod) => {
-          const activeSkuId = selectedSkuByProduct[prod.id] || prod.skus[0]?.id;
-          const currentSku = prod.skus.find((s) => s.id === activeSkuId) || prod.skus[0];
-          const displayImage = currentSku?.mainImageUrl || prod.skus.find((s) => s.mainImageUrl)?.mainImageUrl;
-
-          return (
-            <div
-              key={prod.id}
-              className="erp-card rounded-2xl overflow-hidden hover:border-moss/30 transition-all flex flex-col justify-between shadow-xs"
-            >
-              <div>
-                {/* Variant Image Preview */}
-                <div className="relative w-full h-48 bg-surface-soft border-b border-moss/10 overflow-hidden flex items-center justify-center">
-                  {displayImage ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={displayImage}
-                      alt={prod.name}
-                      className="w-full h-full object-cover transition-transform duration-300 hover:scale-105"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center justify-center text-ink-muted p-4">
-                      <ImageIcon className="w-10 h-10 stroke-1 text-moss/40 mb-1" />
-                      <span className="text-[11px] font-medium">Sin imagen cargada</span>
-                    </div>
-                  )}
-
-                  {/* Badges Over Image */}
-                  <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[10px] font-bold bg-white/90 backdrop-blur-xs text-ink px-2 py-0.5 rounded-md shadow-xs border border-moss/15">
-                      {prod.categoryName} {prod.subcategoryName ? `› ${prod.subcategoryName}` : ''}
-                    </span>
-                    <StatusBadge status={prod.productType} />
-                  </div>
-
-                  {currentSku?.salePriceNio && (
-                    <div className="absolute bottom-2.5 right-2.5 bg-moss text-white px-2.5 py-1 rounded-lg font-bold text-xs shadow-md">
-                      {formatNIO(currentSku.salePriceNio)}
-                    </div>
-                  )}
-                </div>
-
-                {/* Content */}
-                <div className="p-4">
-                  <h3 className="font-bold text-sm text-ink line-clamp-1">{prod.name}</h3>
-                  <p className="text-xs text-ink-muted mt-0.5 line-clamp-1">{prod.description || 'Sin descripción'}</p>
-
-                  {/* Variant Selector (Color Balls & Tallas) */}
-                  <div className="mt-3 pt-3 border-t border-moss/10">
-                    <div className="flex items-center justify-between text-[11px] text-ink-muted mb-2 font-medium">
-                      <span>Variantes ({prod.skus.length}):</span>
-                      <span className="font-bold text-ink">
-                        {currentSku?.size ? `Talla ${currentSku.size}` : ''} {currentSku?.colorName ? `• ${currentSku.colorName}` : ''}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {prod.skus.map((sku) => {
-                        const isSelected = sku.id === currentSku?.id;
-                        return (
-                          <button
-                            key={sku.id}
-                            onClick={() => setSelectedSkuByProduct({ ...selectedSkuByProduct, [prod.id]: sku.id })}
-                            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold border transition-all ${
-                              isSelected
-                                ? 'bg-mustard/30 border-mustard text-moss-950 shadow-xs'
-                                : 'bg-surface border-moss/15 text-ink hover:bg-surface-soft'
-                            }`}
-                            title={`Talla: ${sku.size} | Color: ${sku.colorName}`}
-                          >
-                            {sku.colorHex && (
-                              <span
-                                className="w-3 h-3 rounded-full border border-moss/30 shadow-xs inline-block"
-                                style={{ backgroundColor: sku.colorHex }}
-                              />
-                            )}
-                            <span>{sku.size || sku.colorName || 'UNI'}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Active SKU Details */}
-                    {currentSku && (
-                      <div className="mt-3 p-2.5 bg-surface rounded-xl border border-moss/10 flex items-center justify-between text-xs">
-                        <div>
-                          <span className="font-mono text-[10px] text-ink-muted block">{currentSku.skuCode}</span>
-                          <span className="text-ink font-semibold">{currentSku.skuDescription}</span>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-[10px] text-ink-muted block">Costo Base</span>
-                          <span className="font-bold text-ink-muted">{formatNIO(currentSku.costPriceNio)}</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Card Footer */}
-              <div className="px-4 py-3 bg-surface-soft border-t border-moss/10 flex items-center justify-between text-xs text-ink-muted">
-                <span className="font-mono text-[10px]">{prod.slug}</span>
-                <button
-                  onClick={() => dataStore.deleteProduct(prod.id)}
-                  className="text-ink-muted hover:text-rose-600 p-1 transition-colors"
-                  title="Eliminar producto del catálogo"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Modal Crear Producto con Categoría y Subcategoría (2 Niveles) */}
-      <Modal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        title="Crear Nuevo Producto en Catálogo"
-        subtitle="Selecciona Categoría (N1), Subcategoría (N2) y agrega las variantes con imagen y color."
-        maxWidth="3xl"
-      >
-        <form onSubmit={handleCreateProduct} className="space-y-4">
-          <div>
-            <label className="text-[11px] font-bold text-ink-muted block mb-1">Nombre del Producto *</label>
-            <input
-              type="text"
-              required
-              placeholder="Ej: Vestido Casual Floral Bohemio"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-xs text-ink focus:outline-none focus:border-moss"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="text-[11px] font-bold text-ink-muted block mb-1">Categoría Principal (Nivel 1) *</label>
-              <select
-                value={categoryId}
-                onChange={(e) => handleCategoryChange(e.target.value)}
-                className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-xs text-ink focus:outline-none focus:border-moss"
-              >
-                {mainCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="text-[11px] font-bold text-ink-muted block mb-1">Subcategoría (Nivel 2)</label>
-              <select
-                value={subcategoryId}
-                onChange={(e) => setSubcategoryId(e.target.value)}
-                className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-xs text-ink focus:outline-none focus:border-moss"
-              >
-                <option value="">-- Sin subcategoría específica --</option>
-                {availableSubcategories.map((sub) => (
-                  <option key={sub.id} value={sub.id}>
-                    {sub.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="text-[11px] font-bold text-ink-muted block mb-1">Tipo de Producto</label>
-              <select
-                value={productType}
-                onChange={(e) => setProductType(e.target.value as ProductType)}
-                className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-xs text-ink focus:outline-none focus:border-moss"
-              >
-                <option value="simple">Producto Simple (Venta individual)</option>
-                <option value="paquete">Producto Paquete (Se desempaca a unidades)</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-[11px] font-bold text-ink-muted block mb-1">Descripción SEO</label>
-              <input
-                type="text"
-                placeholder="Texto para búsqueda y catálogo web"
-                value={seoDescription}
-                onChange={(e) => setSeoDescription(e.target.value)}
-                className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-xs text-ink focus:outline-none focus:border-moss"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="text-[11px] font-bold text-ink-muted block mb-1">Descripción General</label>
-            <textarea
-              rows={2}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="w-full bg-surface border border-moss/20 rounded-xl px-3 py-2 text-xs text-ink focus:outline-none focus:border-moss"
-              placeholder="Detalles de tela, ajuste, cuidados..."
-            />
-          </div>
-
-          {/* SKUs Section with Image URL */}
-          <div className="pt-2 border-t border-moss/10">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-bold text-ink">Variantes de Color & Talla (con Imagen por Variante)</span>
-              <button
-                type="button"
-                onClick={handleAddSkuRow}
-                className="text-xs text-moss hover:text-moss-800 font-bold flex items-center gap-1"
-              >
-                <Plus className="w-3.5 h-3.5" /> Agregar Otra Variante
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              {skus.map((sku, idx) => (
-                <div key={idx} className="bg-surface p-3.5 rounded-xl border border-moss/15 space-y-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-6 gap-2 items-center">
-                    <div className="sm:col-span-2">
-                      <label className="text-[10px] font-bold text-ink-muted block mb-0.5">Descripción Variante</label>
-                      <input
-                        type="text"
-                        placeholder="Ej: Vestido Rosa Talla M"
-                        value={sku.skuDescription}
-                        onChange={(e) => {
-                          const updated = [...skus];
-                          updated[idx].skuDescription = e.target.value;
-                          setSkus(updated);
-                        }}
-                        className="w-full bg-white border border-moss/15 rounded-lg px-2 py-1.5 text-xs text-ink"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-bold text-ink-muted block mb-0.5">Talla</label>
-                      <input
-                        type="text"
-                        placeholder="S, M, L..."
-                        value={sku.size}
-                        onChange={(e) => {
-                          const updated = [...skus];
-                          updated[idx].size = e.target.value;
-                          setSkus(updated);
-                        }}
-                        className="w-full bg-white border border-moss/15 rounded-lg px-2 py-1.5 text-xs text-ink text-center"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-bold text-ink-muted block mb-0.5">Color & Pelotita</label>
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="color"
-                          value={sku.colorHex || '#30342B'}
-                          onChange={(e) => {
-                            const updated = [...skus];
-                            updated[idx].colorHex = e.target.value;
-                            setSkus(updated);
-                          }}
-                          className="w-7 h-7 rounded border border-moss/30 bg-transparent cursor-pointer"
-                          title="Color HEX para el catálogo"
-                        />
-                        <input
-                          type="text"
-                          placeholder="Rosa"
-                          value={sku.colorName}
-                          onChange={(e) => {
-                            const updated = [...skus];
-                            updated[idx].colorName = e.target.value;
-                            setSkus(updated);
-                          }}
-                          className="w-full bg-white border border-moss/15 rounded-lg px-2 py-1.5 text-xs text-ink"
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-bold text-ink-muted block mb-0.5">Precio Venta (C$)</label>
-                      <input
-                        type="number"
-                        placeholder="C$ 450"
-                        value={sku.salePriceNio}
-                        onChange={(e) => {
-                          const updated = [...skus];
-                          updated[idx].salePriceNio = parseFloat(e.target.value) || 0;
-                          setSkus(updated);
-                        }}
-                        className="w-full bg-white border border-moss/15 rounded-lg px-2 py-1.5 text-xs text-ink text-right font-bold text-moss-800"
-                      />
-                    </div>
-                    <div className="flex justify-end pt-3">
-                      {skus.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => setSkus(skus.filter((_, i) => i !== idx))}
-                          className="p-1 text-ink-muted hover:text-rose-600"
-                          title="Eliminar variante"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* URL de Imagen de esta Variante */}
-                  <div className="flex items-center gap-2 pt-1 border-t border-moss/10">
-                    <ImageIcon className="w-4 h-4 text-moss shrink-0" />
-                    <input
-                      type="url"
-                      placeholder="URL de imagen (ej: https://img.shein.com/...)"
-                      value={sku.mainImageUrl || ''}
-                      onChange={(e) => {
-                        const updated = [...skus];
-                        updated[idx].mainImageUrl = e.target.value;
-                        setSkus(updated);
-                      }}
-                      className="w-full bg-white border border-moss/15 rounded-lg px-2.5 py-1 text-xs text-ink placeholder-ink-muted"
-                    />
-                    {sku.mainImageUrl && (
-                      <div className="w-8 h-8 rounded-lg overflow-hidden border border-moss/20 shrink-0 bg-surface-soft">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={sku.mainImageUrl} alt="preview" className="w-full h-full object-cover" />
-                      </div>
-                    )}
-                  </div>
-                </div>
+      {/* Grid Content */}
+      {totalItems > 0 ? (
+        <div className="space-y-4">
+          {viewMode === 'producto' ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+              {paginatedProducts.map((p) => (
+                <ProductCard
+                  key={p.id}
+                  product={p}
+                  stockMap={stockMap}
+                  exchangeRate={exchangeRate}
+                  canManage={canManage}
+                  onEditSku={(sku, prod) => setEditingSkuState({ sku, product: prod })}
+                  onEditProduct={(prod) => setEditingProduct(prod)}
+                  onDeleteProduct={handleDeleteProduct}
+                  onAddSku={(prod) => {
+                    setSelectedProductForNewSku(prod);
+                    setIsCreateSkuModalOpen(true);
+                  }}
+                />
               ))}
             </div>
-          </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+              {paginatedSkus.map(({ sku, product }) => (
+                <SkuCard
+                  key={sku.id}
+                  sku={sku}
+                  product={product}
+                  stockLevel={stockMap[sku.id]}
+                  exchangeRate={exchangeRate}
+                  canManage={canManage}
+                  onEditSku={(s, p) => setEditingSkuState({ sku: s, product: p })}
+                  onEditProduct={(p) => setEditingProduct(p)}
+                  onDeleteProduct={handleDeleteProduct}
+                />
+              ))}
+            </div>
+          )}
 
-          <div className="pt-4 border-t border-moss/10 flex justify-end gap-3">
-            <button
-              type="button"
-              onClick={() => setIsModalOpen(false)}
-              className="px-4 py-2 rounded-xl text-xs font-bold text-ink-muted hover:bg-surface"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              className="px-5 py-2 rounded-xl text-xs font-bold bg-moss hover:bg-moss-700 text-white shadow-md shadow-moss/20"
-            >
-              Guardar en Catálogo
-            </button>
+          {/* Pagination */}
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={totalItems}
+            itemsPerPage={itemsPerPage}
+            pageSizeOptions={[4, 8, 12, 24, 48]}
+            onPageChange={setCurrentPage}
+            onItemsPerPageChange={(newCount) => {
+              setItemsPerPage(newCount);
+              setCurrentPage(1);
+            }}
+          />
+        </div>
+      ) : (
+        <div className="erp-card p-12 text-center border border-dashed border-moss/20 bg-white/50 space-y-3">
+          <div className="w-12 h-12 rounded-full bg-moss/10 text-moss flex items-center justify-center mx-auto text-xl font-bold">
+            0
           </div>
-        </form>
-      </Modal>
+          <h3 className="font-bold text-sm text-ink">No se encontraron resultados</h3>
+          <p className="text-xs text-ink-muted max-w-sm mx-auto">
+            {searchTerm || selectedCategory !== 'all'
+              ? 'Intenta ajustar los filtros de búsqueda o categoría.'
+              : canManage
+                ? 'Aún no has registrado productos en el catálogo. Pulsa "Nuevo Producto" para comenzar.'
+                : 'Pronto publicaremos nuevos productos en el catálogo.'}
+          </p>
+        </div>
+      )}
+
+      {/* Create Product Modal */}
+      <CreateProductModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        categories={categories}
+        exchangeRate={exchangeRate}
+        initialProductCode={dataStore.getNextProductCode()}
+        onSubmit={handleCreateProduct}
+      />
+
+      {/* Create SKU Modal */}
+      <CreateSkuModal
+        isOpen={isCreateSkuModalOpen}
+        onClose={() => {
+          setIsCreateSkuModalOpen(false);
+          setSelectedProductForNewSku(null);
+        }}
+        products={products}
+        defaultProductId={selectedProductForNewSku?.id}
+        onSkuCreated={(newSku, prod) => {
+          // Si deseamos abrir de inmediato la edición o simplemente refrescar
+          setEditingSkuState({ sku: newSku, product: prod });
+        }}
+      />
+
+      {/* Edit SKU Modal */}
+      <EditSkuModal
+        isOpen={Boolean(editingSkuState.sku)}
+        onClose={() => setEditingSkuState({ sku: null, product: null })}
+        sku={editingSkuState.sku}
+        product={editingSkuState.product}
+        productName={editingSkuState.product?.name}
+        onSelectSku={(s) => setEditingSkuState((prev) => ({ ...prev, sku: s }))}
+        onOpenCreateSku={(prod) => {
+          setEditingSkuState({ sku: null, product: null });
+          setSelectedProductForNewSku(prod);
+          setIsCreateSkuModalOpen(true);
+        }}
+      />
+
+      {/* Edit Product Modal */}
+      <EditProductModal
+        isOpen={Boolean(editingProduct)}
+        onClose={() => setEditingProduct(null)}
+        product={editingProduct}
+        categories={categories}
+        onSave={handleSaveProduct}
+      />
+      <LabelsModal isOpen={labelsOpen} onClose={() => setLabelsOpen(false)} products={products} />
+
+      <ConfirmDialog
+        isOpen={Boolean(productToDelete)}
+        title={hasSales ? '¿Desactivar el producto?' : '¿Eliminar el producto?'}
+        confirmLabel={hasSales ? 'Desactivar' : 'Eliminar'}
+        tone={hasSales ? 'default' : 'danger'}
+        onCancel={() => setProductToDelete(null)}
+        onConfirm={confirmDeleteProduct}
+      >
+        <p>
+          <strong>{productToDelete?.name}</strong>
+          {productToDelete?.productCode ? ` (${productToDelete.productCode})` : ''}
+        </p>
+        {deleteImpact && (
+          <ul className="list-disc pl-5 text-ink-muted">
+            <li>{deleteImpact.skus} variante(s)</li>
+            <li>{deleteImpact.unitsInStock} unidad(es) en bodega</li>
+            <li>{deleteImpact.salesLines} línea(s) en facturas</li>
+          </ul>
+        )}
+        {hasSales ? (
+          <p>
+            Tiene ventas registradas, por eso no se puede eliminar sin perder el historial. Se desactivará: deja de
+            mostrarse en el catálogo y en el punto de venta, y puede reactivarlo cuando quiera.
+          </p>
+        ) : (
+          <p>Se eliminará con todas sus variantes. Tendrá unos segundos para deshacerlo.</p>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }
