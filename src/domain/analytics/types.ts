@@ -7,9 +7,18 @@ export interface DashboardKpis {
   capitalInTransitNio: number;
   ordersInTransitCount: number;
   monthlySalesNio: number;
+  monthlyNetSalesSinIvaNio?: number;
   monthlyGrossProfitNio: number;
   totalReceivablesNio: number; // Cuentas por cobrar
   pendingInvoicesCount: number;
+}
+
+export interface CategoryInventoryDistribution {
+  categoryName: string;
+  productCount: number;
+  stockCount: number;
+  inventoryValueNio: number;
+  percentage: number;
 }
 
 export interface SalesCategoryBreakdown {

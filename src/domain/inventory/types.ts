@@ -7,7 +7,20 @@ export type MovementType =
   | 'ajuste_positivo'
   | 'ajuste_negativo'
   | 'regalia_promocion'
-  | 'devolucion';
+  | 'devolucion'
+  | 'reserva'              // apartado para un pedido (no cambia la existencia física)
+  | 'liberacion_reserva';  // se libera un apartado (anulación de pedido)
+
+/** Tipos de ajuste manual de inventario */
+export type AdjustmentType = 'conteo' | 'merma' | 'regalia' | 'entrada';
+
+export interface InventoryAdjustmentInput {
+  skuId: string;
+  tipo: AdjustmentType;
+  /** conteo: existencia física contada; demás: unidades que entran o salen */
+  cantidad: number;
+  motivo: string;
+}
 
 export interface StockLevel {
   skuId: string;
@@ -30,6 +43,8 @@ export interface KardexMovement {
   skuId: string;
   skuCode?: string;
   productName?: string;
+  skuDescription?: string;
+  mainImageUrl?: string;
   movementType: MovementType;
   quantity: number; // Positivo para entradas, negativo para salidas
   previousStock: number;
@@ -38,6 +53,8 @@ export interface KardexMovement {
   notes?: string;
   createdAt: string;
   createdBy?: string;
+  /** Movimiento provisional, calculado en este equipo; se reemplaza por el de la nube al sincronizar */
+  syncOpId?: string;
 }
 
 export interface UnbundleRequest {

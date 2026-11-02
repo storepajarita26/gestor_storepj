@@ -1,5 +1,6 @@
 // Dominio de Catálogo y Jerarquía de Productos
-export type ProductType = 'simple' | 'paquete';
+export type SkuType = 'simple' | 'paquete';
+export type ProductType = SkuType;
 
 export interface Category {
   id: string;
@@ -28,6 +29,10 @@ export interface ProductSku {
   productId: string;
   skuCode: string;
   skuDescription: string;
+  /** Tipo de variante: 'simple' (unidad individual) o 'paquete' (pack/combo desempacable en bodega) */
+  skuType?: SkuType;
+  /** Opcional: descripción HTML propia de la variante; vacía = usa la del producto */
+  descriptionHtml?: string;
   size?: string;
   colorName?: string;
   colorHex?: string;
@@ -40,6 +45,8 @@ export interface ProductSku {
   isActive: boolean;
   stockAvailable?: number;
   bundleItems?: SkuBundleItem[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Product {
@@ -50,8 +57,11 @@ export interface Product {
   subcategoryName?: string;
   name: string;
   slug: string;
+  productCode?: string;
   description?: string;
   seoDescription?: string;
+  /** Descripción larga con formato (HTML limpio) para la ficha de la web */
+  descriptionHtml?: string;
   productType: ProductType;
   isFeatured: boolean;
   isActive: boolean;
@@ -66,7 +76,9 @@ export interface CreateProductInput {
   subcategoryId?: string;
   description?: string;
   seoDescription?: string;
-  productType: ProductType;
+  /** Descripción larga con formato (HTML limpio) para la ficha de la web */
+  descriptionHtml?: string;
+  productType?: ProductType;
   isFeatured?: boolean;
   skus: Omit<ProductSku, 'id' | 'productId'>[];
 }

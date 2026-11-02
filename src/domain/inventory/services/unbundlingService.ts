@@ -6,10 +6,16 @@ import { KardexMovement, StockLevel, UnbundleRequest } from '../types';
 export function executeUnbundlingCalculation(
   request: UnbundleRequest,
   currentBundleStock: number,
-  currentUnitStocks: Record<string, number>
+  currentUnitStocks: Record<string, number>,
+  bundleCostPriceNio: number = 0,
+  /** Precio de venta de cada unidad: el costo del paquete se reparte en proporción a él */
+  unitSalePrices: Record<string, number> = {}
 ): {
   isValid: boolean;
   error?: string;
+  allocatedUnitCostNio: number;
+  /** Costo asignado por unidad, por SKU (reparto según precio de venta; igual que erp_desempacar) */
+  allocatedCostBySku: Record<string, number>;
   bundleMovement: Omit<KardexMovement, 'id' | 'createdAt'>;
   unitMovements: Omit<KardexMovement, 'id' | 'createdAt'>[];
 } {
@@ -17,6 +23,8 @@ export function executeUnbundlingCalculation(
     return {
       isValid: false,
       error: 'La cantidad de paquetes a desempacar debe ser mayor a 0.',
+      allocatedUnitCostNio: 0,
+      allocatedCostBySku: {},
       bundleMovement: {} as any,
       unitMovements: [],
     };
@@ -26,10 +34,34 @@ export function executeUnbundlingCalculation(
     return {
       isValid: false,
       error: `Stock insuficiente del paquete. Disponible: ${currentBundleStock}, solicitado: ${request.quantityPacksToUnbundle}`,
+      allocatedUnitCostNio: 0,
+      allocatedCostBySku: {},
       bundleMovement: {} as any,
       unitMovements: [],
     };
   }
+
+  // Calcular el costo unitario asignado a cada prenda resultante
+  const totalUnitsAdded = request.targetUnitSkus.reduce((acc, u) => acc + u.quantityToAdd, 0);
+  const allocatedUnitCostNio = totalUnitsAdded > 0
+    ? Number(((bundleCostPriceNio * request.quantityPacksToUnbundle) / totalUnitsAdded).toFixed(2))
+    : bundleCostPriceNio;
+
+  // Reparto por valor: una prenda que se vende al doble absorbe el doble del costo del paquete
+  const totalCost = bundleCostPriceNio * request.quantityPacksToUnbundle;
+  const weightSum = request.targetUnitSkus.reduce(
+    (acc, u) => acc + (unitSalePrices[u.unitSkuId] || 0) * u.quantityToAdd,
+    0
+  );
+  const allocatedCostBySku: Record<string, number> = {};
+  request.targetUnitSkus.forEach((u) => {
+    if (u.quantityToAdd <= 0) return;
+    const itemPrice = unitSalePrices[u.unitSkuId] || 0;
+    const share = weightSum > 0 && itemPrice > 0
+      ? (totalCost * (itemPrice * u.quantityToAdd) / weightSum) / u.quantityToAdd
+      : (totalUnitsAdded > 0 ? totalCost / totalUnitsAdded : 0);
+    allocatedCostBySku[u.unitSkuId] = Number(share.toFixed(2));
+  });
 
   // 1. Movimiento de salida del paquete
   const bundleMovement: Omit<KardexMovement, 'id' | 'createdAt'> = {
@@ -39,7 +71,7 @@ export function executeUnbundlingCalculation(
     previousStock: currentBundleStock,
     newStock: currentBundleStock - request.quantityPacksToUnbundle,
     referenceId: request.bundleSkuId,
-    notes: `Desempaque de ${request.quantityPacksToUnbundle} paquetes a unidades individuales. ${request.notes || ''}`,
+    notes: `Desempaque de ${request.quantityPacksToUnbundle} paquetes a unidades individuales (Costo pack: C$ ${bundleCostPriceNio.toFixed(2)}). ${request.notes || ''}`,
   };
 
   // 2. Movimientos de entrada para cada SKU unitario resultante
@@ -54,12 +86,14 @@ export function executeUnbundlingCalculation(
       previousStock: prevStock,
       newStock: prevStock + unit.quantityToAdd,
       referenceId: request.bundleSkuId,
-      notes: `Ingreso de unidades por desempaque de paquete (${request.bundleSkuId})`,
+      notes: `Ingreso por desempaque. Costo asignado C$ ${(allocatedCostBySku[unit.unitSkuId] ?? allocatedUnitCostNio).toFixed(2)} c/u`,
     };
   });
 
   return {
     isValid: true,
+    allocatedUnitCostNio,
+    allocatedCostBySku,
     bundleMovement,
     unitMovements,
   };

@@ -33,6 +33,7 @@ export interface PurchaseItem {
   
   quantityOrdered: number;
   quantityReceived: number;
+  weightLbs?: number;
   
   unitCostUsd: number;
   unitCostNio: number;
@@ -42,6 +43,8 @@ export interface PurchaseItem {
   suggestedSalePriceNio: number; // Precio calculado con regla de margen
   
   receptionStatus: ReceptionItemStatus;
+  modality?: PurchaseModality; // 'simple' (Stock Normal / Vitrina) | 'especial' (Bajo Pedido) | 'regalia'
+  orderRef?: string; // Referencia opcional (ej. "Para Pedido PED-0004" o nombre de cliente)
 }
 
 export interface PurchaseOrder {
@@ -52,6 +55,8 @@ export interface PurchaseOrder {
   trackingNumber?: string;      // Guía aérea / ID de rastreo
   supplierInvoiceId?: string;   // Factura comercial
   modality: PurchaseModality;
+  prorationMethod?: 'valor' | 'peso'; // Método de prorrateo: por valor (default) o por peso en libras
+  exchangeRate?: number;              // Tasa USD/NIO usada al costear la orden
   status: PurchaseStatus;
   
   datePurchased: string;

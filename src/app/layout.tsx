@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
-import { Sidebar } from '@/presentation/components/layout/Sidebar';
-import { TopHeader } from '@/presentation/components/layout/TopHeader';
+import { AppShell } from '@/presentation/components/layout/AppShell';
+import { AuthProvider } from '@/presentation/context/AuthContext';
 
 export const metadata: Metadata = {
   title: 'Gestor de Operaciones PS - ERP Pajarita Store',
@@ -14,18 +14,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="es" className="h-full overflow-hidden">
-      <body className="erp-app h-full flex overflow-hidden text-ink antialiased selection:bg-mustard selection:text-moss-900">
-        {/* Barra Lateral Modular Fija en Moss */}
-        <Sidebar />
-
-        {/* Área de Trabajo y Contenido Principal con Scroll Independiente */}
-        <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden">
-          <TopHeader />
-          <main className="flex-1 overflow-y-auto p-6 md:p-8">
-            {children}
-          </main>
-        </div>
+    <html lang="es" className="h-full">
+      <body className="h-full overflow-hidden">
+        <AuthProvider>
+          <AppShell>{children}</AppShell>
+        </AuthProvider>
       </body>
     </html>
   );

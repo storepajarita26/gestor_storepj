@@ -1,11 +1,26 @@
 import { InvoiceItem, InvoicePayment, InvoiceStatus, SalesInvoice } from '../types';
+import { TaxRegime } from '../../shared/types';
 
-export const IVA_RATE_NICARAGUA = 0.15; // 15% IVA Fiscal
+export const IVA_RATE_NICARAGUA = 0.15; // 15% IVA Fiscal (solo régimen general)
+export const DEFAULT_TAX_REGIME: TaxRegime = 'cuota_fija';
+
+/**
+ * Tasa de IVA a aplicar según el régimen fiscal de la tienda.
+ * En cuota fija la tienda no traslada IVA: la tasa es 0 y el precio del SKU es el precio final.
+ */
+export function getIvaRateForRegime(regime: TaxRegime | undefined): number {
+  return (regime ?? DEFAULT_TAX_REGIME) === 'general' ? IVA_RATE_NICARAGUA : 0;
+}
+
+/** Indica si una factura emitida lleva desglose de IVA (según la tasa con que se emitió). */
+export function invoiceHasIva(invoice: Pick<SalesInvoice, 'ivaRate' | 'ivaTotalNio'>): boolean {
+  return (invoice.ivaRate ?? 0) > 0 && (invoice.ivaTotalNio ?? 0) > 0;
+}
 
 export function calculateInvoiceTotals(
   items: InvoiceItem[],
   globalDiscountNio: number = 0,
-  ivaRate: number = IVA_RATE_NICARAGUA
+  ivaRate: number = getIvaRateForRegime(DEFAULT_TAX_REGIME) // Pasar dataStore.getIvaRate() desde la UI
 ): {
   subtotalSinIvaNio: number;
   subtotalNio: number;
@@ -38,19 +53,24 @@ export function calculateInvoiceTotals(
   };
 }
 
+/**
+ * Saldo y estado de una factura. Considera pagos y notas de crédito (devoluciones).
+ * Debe coincidir con erp_recalcular_saldo_factura en la base de datos.
+ */
 export function calculateInvoiceBalance(
   totalConIvaNio: number,
-  payments: InvoicePayment[]
+  payments: InvoicePayment[],
+  creditedNio: number = 0
 ): {
   amountPaidNio: number;
   balanceDueNio: number;
   status: InvoiceStatus;
 } {
   const amountPaidNio = payments.reduce((acc, p) => acc + (p.amountNio || 0), 0);
-  const balanceDueNio = Math.max(0, totalConIvaNio - amountPaidNio);
+  const balanceDueNio = Math.max(0, totalConIvaNio - creditedNio - amountPaidNio);
 
   let status: InvoiceStatus = 'pendiente';
-  if (amountPaidNio >= totalConIvaNio && totalConIvaNio > 0) {
+  if (totalConIvaNio > 0 && amountPaidNio + creditedNio >= totalConIvaNio - 0.005) {
     status = 'pagada';
   } else if (amountPaidNio > 0) {
     status = 'parcial';
