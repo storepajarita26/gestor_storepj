@@ -81,7 +81,7 @@ export function exportInvoicesToCsv(
     escapeCsvCell((inv.amountPaidNio || 0).toFixed(2)),
     escapeCsvCell((inv.balanceDueNio || 0).toFixed(2)),
     escapeCsvCell(inv.status.toUpperCase()),
-    escapeCsvCell(inv.deliveryStatus.toUpperCase()),
+    escapeCsvCell((inv.deliveryStatus || 'entregado').toUpperCase()),
     escapeCsvCell(inv.trackingRef || ''),
     escapeCsvCell(inv.notes || ''),
     ];

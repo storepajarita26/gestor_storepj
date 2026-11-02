@@ -99,7 +99,7 @@ export interface SalesInvoice {
   status: InvoiceStatus;
   
   // Seguimiento de Entrega / Cumplimiento
-  deliveryStatus: DeliveryStatus;
+  deliveryStatus?: DeliveryStatus;
   deliveryDate?: string;
   trackingRef?: string;
   
